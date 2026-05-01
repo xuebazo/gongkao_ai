@@ -1,0 +1,39 @@
+# 公考智能解析助手 - Git 忽略规则
+
+# 临时文件目录
+tmp/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 虚拟环境
+venv/
+.venv/
+env/
+.env.local
+
+# IDE 配置
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 输出文件
+output/
+
+# 环境变量文件（敏感信息）
+.env
+
+# 数据库文件
+*.db
+*.sqlite3
+
+# 日志文件
+*.log
+
+# 系统文件
+.DS_Store
+Thumbs.db
