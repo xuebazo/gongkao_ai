@@ -21,6 +21,7 @@
 """
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -188,6 +189,8 @@ class InterviewTrainer:
         ]
 
         # 逐轮进行
+        # 初始化为空串：max_rounds 为 0 时循环不执行，下方总结判断仍可安全访问
+        ai_response = ""
         round_num = 1
         while round_num <= self.max_rounds:
             # 调用 API 获取题目 / 反馈+追问
@@ -231,10 +234,11 @@ class InterviewTrainer:
             print(f"\n{summary}")
             md_lines.append(f"### AI（总结）\n\n{summary}\n\n")
 
-        # 保存记录
+        # 保存记录（时间戳命名，防止覆盖）
         full_md = "".join(md_lines)
         OUTPUT_DIR.mkdir(exist_ok=True)
-        output_file = OUTPUT_DIR / "interview_session.md"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = OUTPUT_DIR / f"interview_session_{ts}.md"
         output_file.write_text(full_md, encoding="utf-8")
         print(f"\n[对话记录已保存至 {output_file}]")
 
@@ -314,15 +318,17 @@ class InterviewTrainer:
         )
         messages.append({"role": "user", "content": init_msg})
 
+        # 初始化为空串：首轮即因总时间耗尽 break 时不会赋值
+        ai_response = ""
         for round_num in range(1, QUESTION_COUNT + 1):
             # 检查总时间
             total_elapsed = time.time() - session_start
             remaining = TOTAL_TIME_LIMIT - total_elapsed
             if remaining <= 0:
-                print("\n[Time's up! Interview ended early]")
+                print("\n[时间已用完！面试提前结束]")
                 break
 
-            print(f"\n[Time remaining: {self._format_time(remaining)}]")
+            print(f"\n[剩余时间: {self._format_time(remaining)}]")
 
             # 获取 AI 题目/反馈
             ai_response = self._call_api(messages)
@@ -370,8 +376,8 @@ class InterviewTrainer:
             })
 
             # 本轮计时反馈
-            flag = " [!! overtime]" if think_time > THINKING_TIME_LIMIT else ""
-            print(f"\n[Q{round_num} timing: think {think_time:.0f}s | answer {answer_time:.0f}s | total {self._format_time(total_elapsed)}{flag}]")
+            flag = " [超时!]" if think_time > THINKING_TIME_LIMIT else ""
+            print(f"\n[第{round_num}题计时: 思考 {think_time:.0f}秒 | 回答 {answer_time:.0f}秒 | 累计 {self._format_time(total_elapsed)}{flag}]")
 
             messages.append({
                 "role": "user",
@@ -393,10 +399,11 @@ class InterviewTrainer:
         print(time_report)
         md_lines.append(f"## 时间分析报告\n\n{time_report}\n")
 
-        # 保存
+        # 保存（时间戳命名）
         full_md = "".join(md_lines)
         OUTPUT_DIR.mkdir(exist_ok=True)
-        output_file = OUTPUT_DIR / "interview_session.md"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = OUTPUT_DIR / f"interview_{ts}.md"
         output_file.write_text(full_md, encoding="utf-8")
         print(f"\n[对话记录已保存至 {output_file}]")
 
@@ -419,10 +426,10 @@ class InterviewTrainer:
         total_elapsed = time.time() - session_start
         lines = [
             "",
-            "### [Time Analysis]",
+            "### 时间分析报告",
             "",
-            f"| Q# | Think | Answer | Total | Overtime |",
-            f"|-----|-------|--------|-------|----------|",
+            f"| 题号 | 思考用时 | 作答用时 | 合计 | 是否超时 |",
+            f"|------|---------|---------|------|---------|",
         ]
 
         overtime_rounds: list[int] = []
@@ -433,37 +440,37 @@ class InterviewTrainer:
             r = t["round"]
             think = t["think_time"]
             ans = t["answer_time"]
-            ot = "!! YES" if t["think_overtime"] else "OK"
+            ot = "超时" if t["think_overtime"] else "正常"
             if t["think_overtime"]:
                 overtime_rounds.append(r)
 
             lines.append(
-                f"| Q{r} | {think:.0f}s | {ans:.0f}s | "
-                f"{t['round_total']:.0f}s | {ot} |"
+                f"| 第{r}题 | {think:.0f}秒 | {ans:.0f}秒 | "
+                f"{t['round_total']:.0f}秒 | {ot} |"
             )
             total_think += think
             total_answer += ans
 
         lines.append("")
-        lines.append(f"- **Total time**: {InterviewTrainer._format_time(total_elapsed)}"
-                      f" (limit: {TOTAL_TIME_LIMIT // 60}min)")
-        lines.append(f"- **Think time**: {total_think:.0f}s")
-        lines.append(f"- **Answer time**: {total_answer:.0f}s")
+        lines.append(f"- **总用时**：{InterviewTrainer._format_time(total_elapsed)}"
+                      f"（上限 {TOTAL_TIME_LIMIT // 60} 分钟）")
+        lines.append(f"- **思考总耗时**：{total_think:.0f}秒")
+        lines.append(f"- **回答总耗时**：{total_answer:.0f}秒")
 
         if overtime_rounds:
-            rounds_str = ", ".join(f"Q{r}" for r in overtime_rounds)
-            lines.append(f"- **!! Overtime questions**: {rounds_str}"
-                          f" (limit: {THINKING_TIME_LIMIT}s each)")
-            lines.append(f"- **Tip**: Practice controlling thinking within {THINKING_TIME_LIMIT}s. "
-                          "Long pauses leave a hesitant impression on real examiners.")
+            rounds_str = "、".join(f"第{r}题" for r in overtime_rounds)
+            lines.append(f"- **超时题目**：{rounds_str}"
+                          f"（每题思考上限 {THINKING_TIME_LIMIT} 秒）")
+            lines.append(f"- **建议**：平时练习时控制每题思考在 {THINKING_TIME_LIMIT} 秒内，"
+                          "实际考场中思考时间过长会给考官留下犹豫不决的印象。")
         else:
-            lines.append("- **OK** All questions within thinking time limit")
+            lines.append("- 所有题目思考时间均在合理范围内")
 
         if total_elapsed > TOTAL_TIME_LIMIT:
-            lines.append(f"- **!! Total overtime**: {InterviewTrainer._format_time(total_elapsed - TOTAL_TIME_LIMIT)} over limit")
+            lines.append(f"- **总时间超限**：超出 {InterviewTrainer._format_time(total_elapsed - TOTAL_TIME_LIMIT)}")
         else:
             remaining = TOTAL_TIME_LIMIT - total_elapsed
-            lines.append(f"- **OK** Time remaining: {InterviewTrainer._format_time(remaining)}")
+            lines.append(f"- 总时间充裕，剩余 {InterviewTrainer._format_time(remaining)}")
 
         return "\n".join(lines)
 
