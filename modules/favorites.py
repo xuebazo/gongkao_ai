@@ -14,7 +14,10 @@
     content = fav.view_favorite(0)
 """
 import json
+import os
+import shutil
 import sys
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -23,6 +26,70 @@ from typing import Any
 # ── 数据目录/文件 ──
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 FAVORITES_FILE = DATA_DIR / "favorites.json"
+
+
+def load_favorites_file() -> list[dict[str, Any]]:
+    """读取收藏 JSON；文件损坏时保留现场并尝试从备份恢复，绝不静默清零"""
+    for attempt in range(2):
+        if not FAVORITES_FILE.exists():
+            return []
+        try:
+            data = json.loads(FAVORITES_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data
+            reason = f"数据格式异常: 期望列表，实际 {type(data).__name__}"
+        except (json.JSONDecodeError, OSError) as e:
+            reason = str(e)
+        if attempt == 0:
+            # 第一轮失败：隔离坏文件并尝试从备份恢复，第二轮读取恢复结果
+            _quarantine_and_restore(reason)
+    return []
+
+
+def _quarantine_and_restore(reason: str) -> None:
+    """把损坏的收藏文件改名保留，并尝试从 favorites.bak 恢复上一版"""
+    corrupt = FAVORITES_FILE.with_name(
+        f"favorites.corrupt-{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    )
+    try:
+        FAVORITES_FILE.replace(corrupt)
+        warnings.warn(f"收藏本数据文件损坏（{reason}），已保留为 {corrupt.name}，尝试从备份恢复")
+    except OSError as replace_err:
+        warnings.warn(f"收藏本数据损坏（{reason}）且无法保留原文件: {replace_err}")
+        return
+
+    bak = FAVORITES_FILE.with_suffix(".bak")
+    if not bak.exists():
+        return
+    try:
+        data = json.loads(bak.read_text(encoding="utf-8"))
+        if isinstance(data, list) and save_favorites_file(data):
+            warnings.warn(f"已从备份 {bak.name} 恢复 {len(data)} 条收藏")
+    except (json.JSONDecodeError, OSError) as bak_err:
+        warnings.warn(f"备份文件也不可读，请手动检查 {corrupt.name} 与 {bak.name}: {bak_err}")
+
+
+def save_favorites_file(items: list[dict[str, Any]]) -> bool:
+    """原子保存收藏列表：先写临时文件再 os.replace；替换前把上一版轮转为 favorites.bak"""
+    tmp = FAVORITES_FILE.with_suffix(".tmp")
+    bak = FAVORITES_FILE.with_suffix(".bak")
+    try:
+        if FAVORITES_FILE.exists():
+            try:
+                shutil.copyfile(FAVORITES_FILE, bak)  # 备份失败不阻塞保存
+            except OSError:
+                pass
+        tmp.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, FAVORITES_FILE)
+        return True
+    except OSError as e:
+        warnings.warn(f"收藏本数据保存失败: {e}")
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        return False
 
 
 class Favorites:
@@ -110,29 +177,31 @@ class Favorites:
         """返回收藏总数"""
         return len(self._load())
 
+    def search_favorites(self, keyword: str) -> list[dict[str, Any]]:
+        """
+        按关键词搜索收藏（标题字段大小写不敏感匹配）。
+
+        参数:
+            keyword: 搜索关键词
+
+        返回:
+            匹配的收藏条目列表
+        """
+        if not keyword or not keyword.strip():
+            return self.list_favorites()
+        items = self.list_favorites()
+        kw = keyword.strip().lower()
+        return [
+            item for item in items
+            if kw in item.get("title", "").lower()
+        ]
+
     # ── 私有方法 ──
 
     def _load(self) -> list[dict[str, Any]]:
         """从 JSON 文件加载收藏列表"""
-        try:
-            if FAVORITES_FILE.exists():
-                data = json.loads(FAVORITES_FILE.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    return data
-        except (json.JSONDecodeError, OSError) as e:
-            import warnings
-            warnings.warn(f"收藏本数据读取失败，已重置: {e}")
-        return []
+        return load_favorites_file()
 
     def _save(self, items: list[dict[str, Any]]) -> bool:
-        """保存收藏列表到 JSON 文件"""
-        try:
-            FAVORITES_FILE.write_text(
-                json.dumps(items, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            return True
-        except OSError as e:
-            import warnings
-            warnings.warn(f"收藏本数据保存失败: {e}")
-            return False
+        """保存收藏列表到 JSON 文件（原子写，损坏自动隔离）"""
+        return save_favorites_file(items)
