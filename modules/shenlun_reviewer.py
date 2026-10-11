@@ -200,13 +200,20 @@ class ShenlunReviewer:
 
         # 截断文章（避免超 token 限制）
         max_essay_chars = 4000
+        truncated = False
         if len(essay_text) > max_essay_chars:
             essay_text = essay_text[:max_essay_chars] + "\n\n[文章过长已截断]"
+            user_content = f"【真题题目】\n{question_clean}\n\n【考生文章】\n{essay_text}"
+            truncated = True
+        else:
             user_content = f"【真题题目】\n{question_clean}\n\n【考生文章】\n{essay_text}"
 
         try:
             feedback = self._call_api(user_content, model, system_prompt)
-            return {"feedback": feedback}
+            result: dict[str, Any] = {"feedback": feedback}
+            if truncated:
+                result["truncated"] = True
+            return result
         except requests.exceptions.Timeout:
             return {"error": "API 请求超时，请稍后重试"}
         except requests.exceptions.ConnectionError:

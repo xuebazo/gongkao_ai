@@ -239,6 +239,34 @@ class MistakeTracker:
                     break
         return "; ".join(keywords[:5]) if keywords else feedback[:100]
 
+    # ── 手动添加方法 ──
+
+    def add_shenlun_mistake_manual(
+        self, question: str, question_type: str, weak_points: str
+    ) -> int:
+        """手动添加一条申论错题（来源标注为手动添加）"""
+        cursor = self.conn.execute(
+            """INSERT INTO shenlun_mistakes
+               (question, question_type, weak_points, feedback_summary)
+               VALUES (?, ?, ?, ?)""",
+            (question, question_type, weak_points, "[手动添加]"),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def add_interview_mistake_manual(
+        self, topic: str, question: str, weak_point: str
+    ) -> int:
+        """手动添加一条面试错题（来源标注为手动添加）"""
+        cursor = self.conn.execute(
+            """INSERT INTO interview_mistakes
+               (topic, question, weak_point, answer_summary)
+               VALUES (?, ?, ?, ?)""",
+            (topic, question, weak_point, "[手动添加]"),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
 
 # ── 向后兼容的函数接口 ──
 

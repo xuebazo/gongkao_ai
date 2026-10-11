@@ -48,9 +48,9 @@ MENU_OPTIONS = {
     "1": ("📄 政策文件解析", "导入政策文件，自动提取考点与结构化信息"),
     "2": ("📝 申论真题评阅", "提交申论文章，获取AI评分与写作建议"),
     "3": ("🎤 面试模拟训练", "AI模拟面试官，进行结构化面试练习"),
-    "4": ("⚙️  系统配置", "查看与修改系统配置"),
+    "4": ("⚙️  系统配置", "查看 API 与模型配置"),
     "5": ("📋 错题本", "查看申论与面试薄弱点统计"),
-    "6": ("📜 历史解析", "查看过往政策解析记录"),
+    "6": ("📜 历史记录", "查看过往政策解析、申论批改与面试对练记录"),
     "7": ("⭐ 我的收藏本", "查看已收藏的解析/批改/面试报告"),
     "0": ("🚪 退出系统", "退出公考智能解析助手"),
 }
@@ -280,6 +280,44 @@ def _show_favorite_prompt(fav_type: str, title: str, source_file: str) -> None:
             _print("[red]收藏失败[/red]")
 
 
+def _show_favorite_prompt_interview(topic: str) -> None:
+    """面试结束后的收藏提示（扫描最新 interview 文件）"""
+    output_dir = Path(__file__).resolve().parent / "output"
+    files = sorted(output_dir.glob("interview_*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if files:
+        source_file = str(files[0])
+        _show_favorite_prompt("interview", topic, source_file)
+
+
+def _record_interview_mistake(topic: str, mode: str, full_md: str) -> None:
+    """从面试总结中提取薄弱点，自动记录到错题本"""
+    try:
+        from modules.mistake_tracker import MistakeTracker
+        # 提取 AI 总结部分中的薄弱点
+        weak_keywords = ["缺乏", "不足", "薄弱", "扣分", "短板", "过于", "问题"]
+        weak_lines: list[str] = []
+        in_summary = False
+        for line in full_md.split("\n"):
+            if "面试总结" in line or "改进建议" in line:
+                in_summary = True
+                continue
+            if in_summary:
+                for kw in weak_keywords:
+                    if kw in line:
+                        weak_lines.append(line.strip())
+                        break
+        weak_point = "; ".join(weak_lines[:3]) if weak_lines else "详见对话记录"
+
+        tracker = MistakeTracker()
+        tracker.add_interview_mistake(
+            topic=f"{topic}（{mode}）",
+            question="多轮面试对话",
+            weak_point=weak_point,
+        )
+    except Exception:
+        pass  # 记录失败不阻塞主流程
+
+
 def _save_policy_report(
     result: dict[str, Any],
     analysis_type: str,
@@ -414,6 +452,17 @@ def handle_shenlun_reviewer() -> None:
     _print(f"[dim]当前题型: {question_type}[/dim]")
     _print()
 
+    # Pro 模式选项
+    _print("[dim]是否启用 Pro 模式（更深度评阅，Token 消耗约多 50%）？[y/N][/dim]")
+    if _HAS_RICH and console is not None:
+        pro_choice = console.input("[cyan]请选择: [/cyan]").strip().lower()
+    else:
+        pro_choice = input("请选择: ").strip().lower()
+    use_pro = pro_choice == "y"
+    if use_pro:
+        _print("[dim]Pro 模式已启用[/dim]")
+    _print()
+
     # 输入方式选择
     _print("[dim]输入方式: [1] 手动输入  [2] 从文件读取[/dim]")
     if _HAS_RICH and console is not None:
@@ -429,10 +478,15 @@ def handle_shenlun_reviewer() -> None:
     if question is None or essay_text is None:
         return
 
+    # 若用户选 Pro 模式，在题目参数前拼接关键字
+    eval_question = question
+    if use_pro:
+        eval_question = "Pro模式 " + question
+
     # 调用评阅
     _print("[dim]正在调用 AI 评阅（约需 10-30 秒）...[/dim]")
     reviewer = ShenlunReviewer()
-    result = reviewer.evaluate_essay(question, essay_text, question_type)
+    result = reviewer.evaluate_essay(eval_question, essay_text, question_type)
 
     if "error" in result:
         _print(f"[red]评阅失败: {result['error']}[/red]")
@@ -441,6 +495,11 @@ def handle_shenlun_reviewer() -> None:
     feedback = result["feedback"]
     _print()
     _print("[bold green]========== 评阅报告 ==========[/bold green]")
+
+    # 截断警告
+    if result.get("truncated"):
+        _print("[yellow]⚠️ 提示：您的文章已超过 4000 字，系统已自动截取前 4000 字进行评阅，评分结果仅供参考。[/yellow]")
+
     _print(feedback)
     _print("[bold green]==============================[/bold green]")
 
@@ -596,16 +655,16 @@ def handle_interview_trainer() -> None:
             _print(f"[dim]主题: {topic} | 10分钟3题 | 自动计时[/dim]")
             trainer = InterviewTrainer()
             try:
-                trainer.full_simulation(topic)
+                full_md = trainer.full_simulation(topic)
             except Exception as e:
                 _print(f"[red]面试异常: {e}[/red]")
+                return
 
-            # 收藏提示
-            _show_favorite_prompt(
-                "interview",
-                topic,
-                str(Path(__file__).resolve().parent / "output" / "interview_session.md"),
-            )
+            # 自动记录面试错题
+            _record_interview_mistake(topic, "高仿真面试", full_md)
+
+            # 收藏提示（扫描最新 output 文件）
+            _show_favorite_prompt_interview(topic)
             return
 
         # 普通模式
@@ -638,16 +697,16 @@ def handle_interview_trainer() -> None:
 
         trainer = InterviewTrainer(max_rounds=max_rounds)
         try:
-            trainer.start_session(topic, mode=mode)
+            full_md = trainer.start_session(topic, mode=mode)
         except Exception as e:
             _print(f"[red]面试异常: {e}[/red]")
+            return
+
+        # 自动记录面试错题
+        _record_interview_mistake(topic, mode, full_md)
 
         # 收藏提示
-        _show_favorite_prompt(
-            "interview",
-            topic,
-            str(Path(__file__).resolve().parent / "output" / "interview_session.md"),
-        )
+        _show_favorite_prompt_interview(topic)
 
     finally:
         # 清理临时文件
@@ -704,9 +763,9 @@ def handle_mistake_tracker() -> None:
         for r in stats["recent"]:
             _print(f"  [dim]{r['created_at']}[/dim] {r['question'][:50]}")
 
-    # 查看详情选项
+    # 查看详情 / 手动添加选项
     _print()
-    _print("[dim]输入 's' 查看申论错题详情, 'i' 查看面试错题, 其他键返回[/dim]")
+    _print("[dim]输入 's' 查看申论错题详情, 'i' 查看面试错题, 'a' 手动添加, 其他键返回[/dim]")
     if _HAS_RICH and console is not None:
         choice = console.input("[cyan]请选择: [/cyan]").strip().lower()
     else:
@@ -724,32 +783,104 @@ def handle_mistake_tracker() -> None:
             _print(f"\n[bold]{i}. [{m['topic']}] {m['question'][:60]}[/bold]")
             if m.get("weak_point"):
                 _print(f"   [dim]薄弱点: {m['weak_point'][:100]}[/dim]")
+    elif choice == "a":
+        # 手动添加流程
+        _print()
+        _print("[bold]手动添加错题[/bold]")
+        _print("[dim]类型: [1] 申论错题  [2] 面试错题[/dim]")
+        if _HAS_RICH and console is not None:
+            add_type = console.input("[cyan]请选择 (默认1): [/cyan]").strip()
+        else:
+            add_type = input("请选择 (默认1): ").strip()
+
+        if add_type == "2":
+            _print("[bold]请输入面试主题[/bold]")
+            temp_path = get_multiline_input("面试主题")
+            topic = Path(temp_path).read_text(encoding="utf-8").strip()
+            cleanup_temp_file(temp_path)
+            if not topic:
+                return
+            _print("[bold]请输入面试题目[/bold]")
+            temp_path = get_multiline_input("面试题目")
+            question = Path(temp_path).read_text(encoding="utf-8").strip()
+            cleanup_temp_file(temp_path)
+            if not question:
+                return
+            _print("[bold]请输入薄弱点描述[/bold]")
+            temp_path = get_multiline_input("薄弱点描述")
+            weak_point = Path(temp_path).read_text(encoding="utf-8").strip()
+            cleanup_temp_file(temp_path)
+            if not weak_point:
+                return
+            tracker.add_interview_mistake_manual(topic, question, weak_point)
+            _print("[green]✅ 面试错题已添加[/green]")
+        else:
+            _print("[bold]请输入申论题目[/bold]")
+            temp_path = get_multiline_input("申论题目")
+            question = Path(temp_path).read_text(encoding="utf-8").strip()
+            cleanup_temp_file(temp_path)
+            if not question:
+                return
+            _print("[bold]请选择题型[/bold]")
+            _print("[dim]1.概括归纳 2.综合分析 3.贯彻执行 4.申发论述[/dim]")
+            if _HAS_RICH and console is not None:
+                qt = console.input("[cyan]请选择 (默认4): [/cyan]").strip()
+            else:
+                qt = input("请选择 (默认4): ").strip()
+            qt_map = {"1": "概括归纳", "2": "综合分析", "3": "贯彻执行", "4": "申发论述"}
+            question_type = qt_map.get(qt, "申发论述")
+            _print("[bold]请输入薄弱点描述[/bold]")
+            temp_path = get_multiline_input("薄弱点描述")
+            weak_points = Path(temp_path).read_text(encoding="utf-8").strip()
+            cleanup_temp_file(temp_path)
+            if not weak_points:
+                return
+            tracker.add_shenlun_mistake_manual(question, question_type, weak_points)
+            _print("[green]✅ 申论错题已添加[/green]")
 
 
 def handle_policy_history() -> None:
-    """历史政策解析记录查看入口（支持查看和删除管理）"""
+    """历史记录查看入口（政策解析 / 申论批改 / 面试对练）"""
     while True:
-        output_dir = Path(__file__).resolve().parent / "output"
+        _print("[bold cyan]📜 历史记录[/bold cyan]")
+        _print()
+        _print("[bold]请选择记录类型:[/bold]")
+        _print("[dim]  1. 政策解析记录    2. 申论批改记录    3. 面试对练记录    b. 返回[/dim]")
+        if _HAS_RICH and console is not None:
+            cat_choice = console.input("[cyan]请选择: [/cyan]").strip().lower()
+        else:
+            cat_choice = input("请选择: ").strip().lower()
 
-        if not output_dir.exists():
-            _print("[yellow]暂无历史解析记录[/yellow]")
+        if cat_choice == "b":
             return
 
-        # 扫描所有 policy_*.md 文件
-        policy_files = sorted(
-            output_dir.glob("policy_*.md"),
+        pattern_map = {"1": "policy_*.md", "2": "shenlun_feedback_*.md", "3": "interview_*.md"}
+        type_map_label = {"1": "政策解析", "2": "申论批改", "3": "面试对练"}
+        pattern = pattern_map.get(cat_choice)
+        if not pattern:
+            _print("[red]无效选择[/red]")
+            _print()
+            continue
+
+        _handle_history_list(pattern, type_map_label[cat_choice])
+
+
+def _handle_history_list(pattern: str, label: str) -> None:
+    """通用的历史记录列表/查看/删除交互"""
+    output_dir = Path(__file__).resolve().parent / "output"
+
+    while True:
+        files = sorted(
+            output_dir.glob(pattern),
             key=lambda f: f.stat().st_mtime,
             reverse=True,
-        )
+        )[:20]
 
-        if not policy_files:
-            _print("[yellow]暂无历史解析记录[/yellow]")
+        if not files:
+            _print(f"[yellow]暂无{label}记录[/yellow]")
             return
 
-        # 最多展示最近 20 条
-        policy_files = policy_files[:20]
-
-        _print("[bold cyan]📜 历史政策解析记录[/bold cyan]")
+        _print(f"[bold]{label}记录[/bold]（最近 20 条）")
         _print()
 
         if _HAS_RICH and console is not None:
@@ -759,17 +890,17 @@ def handle_policy_history() -> None:
             table.add_column("文件名", style="white")
             table.add_column("生成时间", style="dim")
             table.add_column("操作", style="red")
-            for i, pf in enumerate(policy_files, 1):
-                mtime = datetime.fromtimestamp(pf.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-                table.add_row(str(i), pf.name, mtime, f"删除：d{i}")
+            for i, f in enumerate(files, 1):
+                mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                table.add_row(str(i), f.name, mtime, f"删除：d{i}")
             console.print(table)
         else:
-            for i, pf in enumerate(policy_files, 1):
-                mtime = datetime.fromtimestamp(pf.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-                print(f"  {i}. {pf.name}  [{mtime}]  删除：d{i}")
+            for i, f in enumerate(files, 1):
+                mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                print(f"  {i}. {f.name}  [{mtime}]  删除：d{i}")
 
         _print()
-        _print("[dim]输入序号查看详情 | 输入 d+序号 删除 | 输入 b 返回菜单[/dim]")
+        _print("[dim]输入序号查看详情 | 输入 d+序号 删除 | 输入 b 返回[/dim]")
         if _HAS_RICH and console is not None:
             choice = console.input("[cyan]请选择: [/cyan]").strip()
         else:
@@ -778,47 +909,37 @@ def handle_policy_history() -> None:
         if choice.lower() == "b":
             return
 
-        # 删除操作：d+序号
         if choice.lower().startswith("d"):
             try:
                 idx = int(choice[1:])
-                if 1 <= idx <= len(policy_files):
-                    target_file = policy_files[idx - 1]
-                    # 二次确认
+                if 1 <= idx <= len(files):
+                    target = files[idx - 1]
                     if _HAS_RICH and console is not None:
-                        confirm = console.input(
-                            f"[yellow]确定删除 {target_file.name} 吗？(y/n): [/yellow]"
-                        ).strip().lower()
+                        confirm = console.input(f"[yellow]确定删除 {target.name} 吗？(y/n): [/yellow]").strip().lower()
                     else:
-                        confirm = input(f"确定删除 {target_file.name} 吗？(y/n): ").strip().lower()
+                        confirm = input(f"确定删除 {target.name} 吗？(y/n): ").strip().lower()
                     if confirm == "y":
-                        try:
-                            target_file.unlink()
-                            _print(f"[green]✅ 已删除: {target_file.name}[/green]")
-                        except OSError:
-                            _print(f"[red]删除失败: {target_file.name}[/red]")
+                        target.unlink()
+                        _print(f"[green]✅ 已删除: {target.name}[/green]")
                     else:
                         _print("[dim]已取消[/dim]")
                 else:
                     _print("[red]无效序号[/red]")
             except ValueError:
-                _print("[red]无效输入，格式: d1 / d2 / ...[/red]")
-            # 刷新列表
+                _print("[red]无效输入[/red]")
             _print()
             continue
 
-        # 查看操作：纯数字序号
         try:
             idx = int(choice)
-            if 1 <= idx <= len(policy_files):
-                selected_file = policy_files[idx - 1]
+            if 1 <= idx <= len(files):
+                selected = files[idx - 1]
                 _print()
-                _print(f"[bold]查看报告: {selected_file.name}[/bold]")
+                _print(f"[bold]查看: {selected.name}[/bold]")
                 _print("-" * 60)
-                content = selected_file.read_text(encoding="utf-8")
+                content = selected.read_text(encoding="utf-8")
                 _print(content)
                 _print("-" * 60)
-                # 查看后等待用户按键返回列表
                 _print()
                 _print("[dim]按 Enter 返回列表...[/dim]")
                 input()
@@ -833,14 +954,29 @@ def handle_policy_history() -> None:
 def handle_favorites() -> None:
     """我的收藏本入口"""
     favs = Favorites()
-    items = favs.list_favorites()
+
+    # 搜索
+    _print("[bold cyan]⭐ 我的收藏本[/bold cyan]")
+    _print()
+    _print("[dim]输入关键词搜索（直接回车显示全部）[/dim]")
+    if _HAS_RICH and console is not None:
+        keyword = console.input("[cyan]搜索: [/cyan]").strip()
+    else:
+        keyword = input("搜索: ").strip()
+    items = favs.search_favorites(keyword) if keyword else favs.list_favorites()
 
     if not items:
-        _print("[yellow]收藏本还是空的，去政策解析/申论批改/面试对练里按S收藏吧！[/yellow]")
+        if keyword:
+            _print(f"[yellow]未找到包含「{keyword}」的收藏[/yellow]")
+        else:
+            _print("[yellow]收藏本还是空的，去政策解析/申论批改/面试对练里按S收藏吧！[/yellow]")
         return
 
     while True:
-        _print("[bold cyan]⭐ 我的收藏本[/bold cyan]")
+        _print()
+        _print(f"[bold cyan]⭐ 我的收藏本[/bold cyan]（共 {len(items)} 条）")
+        if keyword:
+            _print(f"[dim]当前搜索: {keyword}[/dim]")
         _print()
 
         type_labels = {"policy": "政策", "shenlun": "申论", "interview": "面试"}
