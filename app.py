@@ -8,6 +8,7 @@ Streamlit 多页应用 - 公考智能解析助手 Web 版
 需要先: pip install streamlit
 """
 import json
+import logging
 import sys
 import time
 from datetime import datetime
@@ -21,6 +22,8 @@ from config import config
 from modules.favorites import load_favorites_file, save_favorites_file
 from modules.policy_analyzer import PolicyAnalyzer
 from modules.shenlun_reviewer import ShenlunReviewer
+
+logger = logging.getLogger(__name__)
 
 # ── 常量 ──
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -250,6 +253,7 @@ with tab2:
     col1, col2 = st.columns([1, 2])
     with col1:
         question_type = st.selectbox("题型", ["申发论述", "概括归纳", "综合分析", "贯彻执行"], index=0)
+        shenlun_pro = st.checkbox("Pro 深度评阅", value=False, help="更深度评阅，Token 消耗约多 50%")
     with col2:
         st.caption("选择正确的题型可获得更准确的评分侧重")
 
@@ -264,7 +268,7 @@ with tab2:
         else:
             with st.spinner("正在评阅中（约 10-30 秒）..."):
                 reviewer = ShenlunReviewer()
-                result = reviewer.evaluate_essay(question, essay, question_type)
+                result = reviewer.evaluate_essay(question, essay, question_type, use_pro=shenlun_pro)
 
             if "error" in result:
                 st.error(result["error"])
@@ -279,7 +283,7 @@ with tab2:
                 st.session_state["_last_shenlun_file"] = str(filepath)
                 st.session_state["_last_shenlun_title"] = question[:40]
 
-                col_a, col_b, col_c = st.columns(3)
+                col_a, col_b = st.columns(2)
                 with col_a:
                     st.download_button("下载报告", data=feedback, file_name=f"shenlun_feedback_{ts}.md", mime="text/markdown")
                 with col_b:
@@ -289,16 +293,15 @@ with tab2:
                             st.toast("已收藏！", icon="⭐")
                         else:
                             st.toast("已收藏过", icon="ℹ️")
-                with col_c:
-                    pass
 
                 try:
                     from modules.mistake_tracker import MistakeTracker
                     tracker = MistakeTracker()
                     tracker.add_shenlun_mistake(question=question, question_type=question_type, feedback=feedback)
                     st.caption("📋 已自动记录到错题本")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("自动记录申论错题失败: %s", e)
+                    st.caption("⚠️ 评阅已完成，但自动写入错题本失败（详见日志）")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -448,8 +451,10 @@ with tab4:
         if choice == "申论错题":
             try:
                 mistakes = tracker.get_shenlun_mistakes(limit=20)
-            except Exception:
+            except Exception as e:
+                logger.warning("读取申论错题失败: %s", e)
                 mistakes = []
+                st.caption("⚠️ 错题本读取失败，以下按空列表显示（详见日志）")
             if not mistakes:
                 st.info("暂无申论错题记录")
             else:
@@ -463,8 +468,10 @@ with tab4:
         else:
             try:
                 mistakes = tracker.get_interview_mistakes(limit=20)
-            except Exception:
+            except Exception as e:
+                logger.warning("读取面试错题失败: %s", e)
                 mistakes = []
+                st.caption("⚠️ 面试错题读取失败，以下按空列表显示（详见日志）")
             if not mistakes:
                 st.info("暂无面试错题记录")
             else:
@@ -486,8 +493,10 @@ with tab5:
 
     try:
         favs = _load_favorites()
-    except Exception:
+    except Exception as e:
+        logger.warning("读取收藏本失败: %s", e)
         favs = []
+        st.caption("⚠️ 收藏本读取失败，以下按空列表显示（详见日志）")
 
     if not favs:
         st.info("收藏本还是空的，去政策解析 / 申论批改 / 面试对练里按 ⭐ 收藏吧！")
@@ -538,8 +547,10 @@ with tab6:
 
     try:
         files = _scan_output_files("policy_*.md")
-    except Exception:
+    except Exception as e:
+        logger.warning("扫描历史报告失败: %s", e)
         files = []
+        st.caption("⚠️ 历史记录读取失败，以下按空列表显示（详见日志）")
 
     if not files:
         st.info("暂无历史解析记录。使用政策解析功能后，报告会自动保存在这里。")

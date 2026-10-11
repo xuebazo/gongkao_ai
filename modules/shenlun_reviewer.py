@@ -154,6 +154,7 @@ class ShenlunReviewer:
         question: str,
         essay_text: str,
         question_type: str = "申发论述",
+        use_pro: bool = False,
     ) -> dict[str, Any]:
         """
         评阅申论文章（支持题型适配）。
@@ -162,6 +163,7 @@ class ShenlunReviewer:
             question: 申论真题题目
             essay_text: 考生文章内容
             question_type: 题型，可选 "概括归纳" / "综合分析" / "贯彻执行" / "申发论述"
+            use_pro: 是否启用 Pro 深度评阅（显式参数；不再依赖题目里的 "Pro模式" 前缀）
 
         返回:
             dict: {"feedback": "Markdown 评阅报告"} 或 {"error": "错误信息"}
@@ -179,14 +181,16 @@ class ShenlunReviewer:
         # 获取题型配置
         type_config = QUESTION_TYPE_CONFIG[question_type]
 
-        # 模型选择：题目含"Pro模式"关键字时切换高能力模型
-        use_pro = "Pro模式" in question
-        model = "deepseek-chat"
-        if use_pro:
-            model = getattr(config, "DEEPSEEK_PRO_MODEL", "deepseek-chat")
-            question_clean = question.replace("Pro模式", "").strip()
-        else:
-            question_clean = question
+        # 模型选择：显式 use_pro 参数。
+        # 兼容历史调用方：题目里若仍带 "Pro模式" 前缀，自动识别并从题干中剔除。
+        legacy_prefix = "Pro模式" in question
+        if legacy_prefix:
+            question = question.replace("Pro模式", "").strip()
+        pro = use_pro or legacy_prefix
+        model = getattr(config, "DEEPSEEK_MODEL", "deepseek-chat")
+        if pro:
+            model = getattr(config, "DEEPSEEK_PRO_MODEL", "deepseek-reasoner")
+        question_clean = question
 
         # 构建题型专属系统提示词
         system_prompt = SYSTEM_PROMPT_TEMPLATE.format(

@@ -2,6 +2,7 @@
 公考智能解析助手 - 主程序入口
 菜单式交互界面
 """
+import logging
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +11,8 @@ from typing import Any
 from config import config
 from utils.input_helper import get_multiline_input, cleanup_temp_file
 from modules.favorites import Favorites
+
+logger = logging.getLogger(__name__)
 
 # Rich 库可选导入：若未安装则退化为纯文本输出
 try:
@@ -314,8 +317,8 @@ def _record_interview_mistake(topic: str, mode: str, full_md: str) -> None:
             question="多轮面试对话",
             weak_point=weak_point,
         )
-    except Exception:
-        pass  # 记录失败不阻塞主流程
+    except Exception as e:
+        logger.warning("自动记录面试错题失败（不阻塞主流程）: %s", e)
 
 
 def _save_policy_report(
@@ -478,15 +481,10 @@ def handle_shenlun_reviewer() -> None:
     if question is None or essay_text is None:
         return
 
-    # 若用户选 Pro 模式，在题目参数前拼接关键字
-    eval_question = question
-    if use_pro:
-        eval_question = "Pro模式 " + question
-
-    # 调用评阅
+    # 调用评阅（Pro 模式走显式参数，不再依赖题目前缀）
     _print("[dim]正在调用 AI 评阅（约需 10-30 秒）...[/dim]")
     reviewer = ShenlunReviewer()
-    result = reviewer.evaluate_essay(eval_question, essay_text, question_type)
+    result = reviewer.evaluate_essay(question, essay_text, question_type, use_pro=use_pro)
 
     if "error" in result:
         _print(f"[red]评阅失败: {result['error']}[/red]")
@@ -521,8 +519,9 @@ def handle_shenlun_reviewer() -> None:
             feedback=feedback,
         )
         _print("[dim]已自动记录到错题本[/dim]")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("自动记录申论错题失败: %s", e)
+        _print("[dim]（自动记录错题本失败，详见日志）[/dim]")
 
     # 导出选项
     _print("[dim]导出选项: [X] 小红书模版  [C] 社群模版  [Enter] 跳过[/dim]")
@@ -539,8 +538,9 @@ def handle_shenlun_reviewer() -> None:
             export_file = output_dir / f"shenlun_export_{timestamp}.md"
             export_file.write_text(exported, encoding="utf-8")
             _print(f"[dim]已导出至: {export_file}[/dim]")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("导出模板生成失败: %s", e)
+            _print("[yellow]导出失败，详见日志[/yellow]")
 
     # 收藏提示
     _print("[dim]💡 按 S 键将此批改报告添加到收藏本，按任意其他键继续…[/dim]")

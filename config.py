@@ -32,6 +32,8 @@ class Config:
         "DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"
     )
     DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    # Pro（深度评阅）模型：默认用推理模型；若账号/中转不支持，用环境变量覆盖即可
+    DEEPSEEK_PRO_MODEL: str = os.getenv("DEEPSEEK_PRO_MODEL", "deepseek-reasoner")
 
     # ── 应用配置 ──
     APP_NAME: str = "公考智能解析助手"
